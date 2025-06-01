@@ -50,13 +50,13 @@ class HostingerMigrationImporter {
     private bool $skipContent;
 
     /**
-     * Block format for reading binary archives (corrected PHP pack/unpack format)
-     *
+     * Block format for reading binary archives (optimized format)
+     * 
      * @var array
      */
     private array $blockFormat = [
-        'pack' => 'a4096VVa4096',  // For pack: filename, size, date, path
-        'unpack' => 'a4096filename/Vsize/Vdate/a4096path'  // For unpack: named fields
+        'pack' => 'a255VVa4112',  // filename(255), size(4), date(4), path(4112) = 4375 bytes
+        'unpack' => 'a255filename/Vsize/Vdate/a4112path'  // For unpack: named fields
     ];
 
     /**
@@ -98,7 +98,7 @@ class HostingerMigrationImporter {
 
             // Check if this is a binary archive or legacy text archive
             if ($this->isBinaryArchive($fullArchivePath)) {
-                $this->log("Detected binary structured archive format");
+                $this->log("Detected binary archive format (optimized 4375-byte headers)");
                 $this->extractBinaryArchive($fullArchivePath);
             } else {
                 $this->log("Detected legacy text archive format, using fallback method");
@@ -144,11 +144,11 @@ class HostingerMigrationImporter {
             return false;
         }
 
-        // Read the first block to see if it matches our binary structure
-        $blockSize = 4096 + 4 + 4 + 4096; // name + size + date + path = 8200 bytes
+        // Check for new optimized format (4375 bytes)
+        $blockSize = 4375;
         $block = fread($fp, $blockSize);
         fclose($fp);
-
+        
         if (strlen($block) < $blockSize) {
             if ($this->debugMode) {
                 $this->log("Archive too small for binary format: " . strlen($block) . " bytes (need $blockSize)", true);
@@ -156,9 +156,9 @@ class HostingerMigrationImporter {
             return false;
         }
 
-        // Try to unpack as binary block using the correct format
+        // Try to unpack as binary format
         $data = @unpack($this->blockFormat['unpack'], $block);
-
+        
         if (!$data || !isset($data['filename'], $data['size'], $data['date'], $data['path'])) {
             if ($this->debugMode) {
                 $this->log("Failed to unpack first block as binary format", true);
@@ -166,7 +166,6 @@ class HostingerMigrationImporter {
             return false;
         }
 
-        // Use the correct named field access
         $fileName = trim($data['filename'], "\0");
         $fileSize = $data['size'];
         $fileDate = $data['date'];
@@ -180,19 +179,19 @@ class HostingerMigrationImporter {
 
         // Basic sanity checks for binary format
         $isValid = (
-            !empty($fileName) &&
-            strlen($fileName) < 256 && // Reasonable filename length
+            !empty($fileName) && 
+            strlen($fileName) <= 255 && 
             strlen($fileName) > 0 &&
-            $fileSize >= 0 &&
+            $fileSize >= 0 && 
             $fileSize < 1024 * 1024 * 1024 && // Less than 1GB per file
             $fileDate > 946684800 && // After year 2000
             $fileDate < time() + 86400 && // Not future dated beyond 1 day
-            strlen($filePath) < 1000 && // Reasonable path length
+            strlen($filePath) <= 4112 && 
             strpos($fileName, "\0") === false && // No embedded nulls after trim
             strpos($filePath, "\0") === false && // No embedded nulls after trim
             // More permissive filename pattern to allow various file types
-            preg_match('/^[a-zA-Z0-9._\-\s]+\.[a-zA-Z0-9]+$/', $fileName) || // files with extensions
-            preg_match('/^[a-zA-Z0-9._\-\s]+$/', $fileName) // files without extensions
+            (preg_match('/^[a-zA-Z0-9._\-\s]+\.[a-zA-Z0-9]+$/', $fileName) || 
+             preg_match('/^[a-zA-Z0-9._\-\s]+$/', $fileName))
         );
 
         if ($this->debugMode) {
@@ -200,10 +199,10 @@ class HostingerMigrationImporter {
             if (!$isValid) {
                 $this->log("Validation details:", true);
                 $this->log("- Filename not empty: " . (!empty($fileName) ? 'YES' : 'NO'), true);
-                $this->log("- Filename length OK: " . ((strlen($fileName) < 256 && strlen($fileName) > 0) ? 'YES' : 'NO'), true);
+                $this->log("- Filename length OK: " . ((strlen($fileName) <= 255 && strlen($fileName) > 0) ? 'YES' : 'NO'), true);
                 $this->log("- File size valid: " . (($fileSize >= 0 && $fileSize < 1024 * 1024 * 1024) ? 'YES' : 'NO'), true);
                 $this->log("- Date valid: " . (($fileDate > 946684800 && $fileDate < time() + 86400) ? 'YES' : 'NO'), true);
-                $this->log("- Path length OK: " . ((strlen($filePath) < 1000) ? 'YES' : 'NO'), true);
+                $this->log("- Path length OK: " . ((strlen($filePath) <= 4112) ? 'YES' : 'NO'), true);
                 $this->log("- Filename pattern OK: " . ((preg_match('/^[a-zA-Z0-9._\-\s]+\.[a-zA-Z0-9]+$/', $fileName) || preg_match('/^[a-zA-Z0-9._\-\s]+$/', $fileName)) ? 'YES' : 'NO'), true);
             }
         }
@@ -223,14 +222,14 @@ class HostingerMigrationImporter {
 
         $fileCount = 0;
         $startTime = microtime(true);
-        $blockSize = 4096 + 4 + 4 + 4096; // name + size + date + path = 8200 bytes
-
+        $blockSize = 4375; // filename(255), size(4), date(4), path(4112) = 4375 bytes
+        
         $this->log("Starting binary archive extraction...");
 
         while (!feof($fp)) {
             // Read file header block
             $block = fread($fp, $blockSize);
-
+            
             if (strlen($block) < $blockSize) {
                 if (strlen($block) > 0) {
                     $this->log("Incomplete block at end of file, stopping extraction");
@@ -238,7 +237,7 @@ class HostingerMigrationImporter {
                 break;
             }
 
-            // Unpack the binary block using named format
+            // Unpack the binary block
             $data = @unpack($this->blockFormat['unpack'], $block);
             if (!$data || !isset($data['filename'], $data['size'], $data['date'], $data['path'])) {
                 $this->log("Failed to unpack binary block, stopping extraction");
@@ -356,8 +355,8 @@ class HostingerMigrationImporter {
 
         $totalTime = microtime(true) - $startTime;
         $this->log(sprintf(
-            "Binary extraction complete. Extracted %d files in %.2f seconds",
-            $fileCount,
+            "Binary extraction complete. Extracted %d files in %.2f seconds", 
+            $fileCount, 
             $totalTime
         ));
     }
@@ -394,24 +393,24 @@ class HostingerMigrationImporter {
             $line = fgets($fp);
             if (empty($line)) continue;
             $trimmedLine = trim($line);
-
+            
             if (strpos($trimmedLine, "__file__:") === 0) {
                 if ($currentFp !== null) {
                     fclose($currentFp);
                 }
-
+                
                 $currentFile = trim(substr($trimmedLine, 9));
                 $fullPath = "{$this->workingDir}/{$currentFile}";
-
+                
                 $dir = dirname($fullPath);
                 if (!file_exists($dir)) {
                     mkdir($dir, 0755, true);
                 }
-
+                
                 continue;
             }
-
-            if (strpos($trimmedLine, "__size__:") === 0 ||
+            
+            if (strpos($trimmedLine, "__size__:") === 0 || 
                 strpos($trimmedLine, "__md5__:") === 0) {
                 if ($currentFile && !$currentFp) {
                     $fullPath = "{$this->workingDir}/{$currentFile}";
@@ -424,7 +423,7 @@ class HostingerMigrationImporter {
                 }
                 continue;
             }
-
+            
             if ($trimmedLine === "__endfile__") {
                 if ($currentFp !== null) {
                     fclose($currentFp);
@@ -432,16 +431,16 @@ class HostingerMigrationImporter {
                 }
                 continue;
             }
-
+            
             if ($trimmedLine === "__done__") {
                 break;
             }
-
+            
             if ($currentFp !== null) {
                 fwrite($currentFp, $line);
             }
         }
-
+        
         if ($currentFp !== null) {
             fclose($currentFp);
         }
@@ -449,7 +448,7 @@ class HostingerMigrationImporter {
 
         $totalTime = microtime(true) - $startTime;
         $this->log(sprintf(
-            "Fallback extraction complete. Extracted %d files in %.2f seconds",
+            "Fallback extraction complete. Extracted %d files in %.2f seconds", 
             $fileCount,
             $totalTime
         ));
@@ -477,7 +476,7 @@ class HostingerMigrationImporter {
     private function log(string $message, bool $debugOnly = false): void
     {
         $shouldDisplay = !$debugOnly || ($debugOnly && $this->debugMode);
-
+        
         if ($shouldDisplay) {
             echo $message . PHP_EOL;
         }
@@ -493,7 +492,7 @@ class HostingerMigrationImporter {
     private function displayError(string $message): void
     {
         $this->log("ERROR: {$message}");
-
+        
         echo "\nUsage: php " . basename(__FILE__) . " --file=filename.hstgr [options]\n";
         echo "\nOptions:\n";
         echo "  --file=FILENAME       Required. The .hstgr archive file name\n";
@@ -503,7 +502,7 @@ class HostingerMigrationImporter {
         echo "  --debug               Enable debug mode with detailed file logging\n";
         echo "\nExample:\n";
         echo "  php " . basename(__FILE__) . " --file=site_export.hstgr --verbose\n";
-
+        
         exit(1);
     }
 }
@@ -518,17 +517,17 @@ try {
         "debug::",
         "help::"
     ];
-
+    
     $options = getopt("", $longopts);
-
+    
     if (empty($options) || isset($options['help'])) {
         $importer = new HostingerMigrationImporter([]);
         exit(0);
     }
-
+    
     $importer = new HostingerMigrationImporter($options);
     $importer->run();
-
+    
 } catch (\Throwable $e) {
     echo "Unexpected error: " . $e->getMessage() . PHP_EOL;
     exit(1);
