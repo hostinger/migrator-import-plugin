@@ -69,13 +69,24 @@ class HostingerMigrationImporter {
         }
 
         $this->archiveFile = $options['file'];
-        $this->workingDir = $options['dest'] ?? getcwd();
+        
+        // Handle workingDir with proper fallback for getcwd() returning false
+        if (isset($options['dest'])) {
+            $this->workingDir = $options['dest'];
+        } else {
+            $currentDir = getcwd();
+            $this->workingDir = $currentDir !== false ? $currentDir : '/tmp';
+        }
         $this->workingDir = rtrim($this->workingDir, '/');
+        
         $this->verbose = isset($options['verbose']);
         $this->debugMode = isset($options['debug']);
         $this->skipContent = isset($options['skip-content']);
 
-        $this->logFile = getcwd() . '/hostinger-migrator-import-log.txt';
+        // Handle logFile with proper fallback for getcwd() returning false
+        $currentDir = getcwd();
+        $logDir = $currentDir !== false ? $currentDir : dirname($this->archiveFile);
+        $this->logFile = $logDir . '/hostinger-migrator-import-log.txt';
     }
 
     /**
@@ -117,10 +128,14 @@ class HostingerMigrationImporter {
      */
     private function findArchiveFile(): string
     {
+        // Get current directory with fallback
+        $currentDir = getcwd();
+        $currentDirPath = $currentDir !== false ? $currentDir : dirname($this->archiveFile);
+        
         $searchPaths = [
             $this->archiveFile,
-            getcwd() . '/' . $this->archiveFile,
-            getcwd() . '/wp-content/hostinger-migration-archives/' . $this->archiveFile,
+            $currentDirPath . '/' . $this->archiveFile,
+            $currentDirPath . '/wp-content/hostinger-migration-archives/' . $this->archiveFile,
             $this->workingDir . '/wp-content/hostinger-migration-archives/' . $this->archiveFile
         ];
 
@@ -296,7 +311,7 @@ class HostingerMigrationImporter {
 
                 // Copy file content in chunks
                 $bytesRemaining = $fileSize;
-                $chunkSize = 512000; // 512KB chunks like All-in-One
+                $chunkSize = 512000; // 512KB chunks for optimal performance
 
                 while ($bytesRemaining > 0) {
                     $readSize = min($chunkSize, $bytesRemaining);
@@ -509,16 +524,51 @@ class HostingerMigrationImporter {
 
 // Main execution
 try {
+    // Handle both formats: --file=value and --file value
     $longopts = [
         "file:",
-        "dest::",
-        "skip-content::",
-        "verbose::",
-        "debug::",
-        "help::"
+        "dest:",           // Changed from :: to : to require value
+        "skip-content",    // Removed :: since it's a flag
+        "verbose",         // Removed :: since it's a flag  
+        "debug",           // Removed :: since it's a flag
+        "help"             // Removed :: since it's a flag
     ];
     
     $options = getopt("", $longopts);
+    
+    // Fallback: Manual parsing for space-separated arguments
+    if (empty($options['file']) && count($argv) > 1) {
+        $options = [];
+        for ($i = 1; $i < count($argv); $i++) {
+            $arg = $argv[$i];
+            
+            if ($arg === '--file' && isset($argv[$i + 1])) {
+                $options['file'] = $argv[$i + 1];
+                $i++; // Skip next argument
+            } elseif ($arg === '--dest' && isset($argv[$i + 1])) {
+                $options['dest'] = $argv[$i + 1];
+                $i++; // Skip next argument
+            } elseif ($arg === '--debug') {
+                $options['debug'] = true;
+            } elseif ($arg === '--verbose') {
+                $options['verbose'] = true;
+            } elseif ($arg === '--skip-content') {
+                $options['skip-content'] = true;
+            } elseif ($arg === '--help') {
+                $options['help'] = true;
+            } elseif (strpos($arg, '--file=') === 0) {
+                $options['file'] = substr($arg, 7);
+            } elseif (strpos($arg, '--dest=') === 0) {
+                $options['dest'] = substr($arg, 7);
+            }
+        }
+    }
+    
+    // Debug: log what options were parsed
+    if (isset($options['debug'])) {
+        echo "Parsed options: " . print_r($options, true) . "\n";
+        echo "Command line args: " . print_r($argv, true) . "\n";
+    }
     
     if (empty($options) || isset($options['help'])) {
         $importer = new HostingerMigrationImporter([]);
