@@ -113,6 +113,7 @@ class HostingerMigrationImporter {
                 $this->extractBinaryArchive($fullArchivePath);
             } else {
                 $this->log("Detected legacy text archive format, using fallback method");
+                $this->analyzeArchiveFormat($fullArchivePath);
                 $this->fallbackTextExtract($fullArchivePath);
             }
 
@@ -165,9 +166,7 @@ class HostingerMigrationImporter {
         fclose($fp);
         
         if (strlen($block) < $blockSize) {
-            if ($this->debugMode) {
-                $this->log("Archive too small for binary format: " . strlen($block) . " bytes (need $blockSize)", true);
-            }
+            $this->log("Binary detection failed: Archive too small for binary format: " . strlen($block) . " bytes (need $blockSize)");
             return false;
         }
 
@@ -175,8 +174,10 @@ class HostingerMigrationImporter {
         $data = @unpack($this->blockFormat['unpack'], $block);
         
         if (!$data || !isset($data['filename'], $data['size'], $data['date'], $data['path'])) {
+            $this->log("Binary detection failed: Failed to unpack first block as binary format");
             if ($this->debugMode) {
-                $this->log("Failed to unpack first block as binary format", true);
+                $hexData = bin2hex(substr($block, 0, 64));
+                $this->log("First 64 bytes hex: $hexData", true);
             }
             return false;
         }
@@ -186,43 +187,49 @@ class HostingerMigrationImporter {
         $fileDate = $data['date'];
         $filePath = trim($data['path'], "\0");
 
-        // Debug the first block data
-        if ($this->debugMode) {
-            $this->log("Binary detection - File: '$fileName', Size: $fileSize, Date: $fileDate, Path: '$filePath'", true);
-            $this->log("Block size: " . strlen($block) . " bytes", true);
-        }
+        // Enhanced debug logging
+        $this->log("Binary detection analysis:");
+        $this->log("- Raw filename: '" . addslashes($data['filename']) . "' (length: " . strlen($data['filename']) . ")");
+        $this->log("- Trimmed filename: '$fileName' (length: " . strlen($fileName) . ")");
+        $this->log("- File size: $fileSize");
+        $this->log("- File date: $fileDate (" . date('Y-m-d H:i:s', $fileDate) . ")");
+        $this->log("- Raw path: '" . addslashes($data['path']) . "' (length: " . strlen($data['path']) . ")");
+        $this->log("- Trimmed path: '$filePath' (length: " . strlen($filePath) . ")");
 
         // Basic sanity checks for binary format
-        $isValid = (
-            !empty($fileName) && 
-            strlen($fileName) <= 255 && 
-            strlen($fileName) > 0 &&
-            $fileSize >= 0 && 
-            $fileSize < 1024 * 1024 * 1024 && // Less than 1GB per file
-            $fileDate > 946684800 && // After year 2000
-            $fileDate < time() + 86400 && // Not future dated beyond 1 day
-            strlen($filePath) <= 4112 && 
-            strpos($fileName, "\0") === false && // No embedded nulls after trim
-            strpos($filePath, "\0") === false && // No embedded nulls after trim
-            // More permissive filename pattern to allow various file types
-            (preg_match('/^[a-zA-Z0-9._\-\s]+\.[a-zA-Z0-9]+$/', $fileName) || 
-             preg_match('/^[a-zA-Z0-9._\-\s]+$/', $fileName))
+        $checks = [];
+        $checks['filename_not_empty'] = !empty($fileName);
+        $checks['filename_length_ok'] = strlen($fileName) <= 255 && strlen($fileName) > 0;
+        $checks['filesize_valid'] = $fileSize >= 0 && $fileSize < 1024 * 1024 * 1024;
+        // More permissive date validation - allow wider range
+        $checks['date_valid'] = $fileDate > 0 && $fileDate < time() + (86400 * 30); // Allow up to 30 days in future
+        $checks['path_length_ok'] = strlen($filePath) <= 4112;
+        $checks['filename_no_nulls'] = strpos($fileName, "\0") === false;
+        $checks['path_no_nulls'] = strpos($filePath, "\0") === false;
+        // More permissive filename pattern - allow more characters and Unicode
+        $checks['filename_pattern_ok'] = (
+            // Standard ASCII filename
+            preg_match('/^[a-zA-Z0-9._\-\s]+(\.[a-zA-Z0-9]+)?$/', $fileName) ||
+            // Allow more special characters common in filenames
+            preg_match('/^[a-zA-Z0-9._\-\s\(\)\[\]&@%+]+(\.[a-zA-Z0-9]+)?$/u', $fileName) ||
+            // Fallback: just check if it's not empty and reasonable length
+            (!empty($fileName) && strlen($fileName) <= 255 && !preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $fileName))
         );
 
-        if ($this->debugMode) {
-            $this->log("Binary format validation result: " . ($isValid ? 'PASSED' : 'FAILED'), true);
-            if (!$isValid) {
-                $this->log("Validation details:", true);
-                $this->log("- Filename not empty: " . (!empty($fileName) ? 'YES' : 'NO'), true);
-                $this->log("- Filename length OK: " . ((strlen($fileName) <= 255 && strlen($fileName) > 0) ? 'YES' : 'NO'), true);
-                $this->log("- File size valid: " . (($fileSize >= 0 && $fileSize < 1024 * 1024 * 1024) ? 'YES' : 'NO'), true);
-                $this->log("- Date valid: " . (($fileDate > 946684800 && $fileDate < time() + 86400) ? 'YES' : 'NO'), true);
-                $this->log("- Path length OK: " . ((strlen($filePath) <= 4112) ? 'YES' : 'NO'), true);
-                $this->log("- Filename pattern OK: " . ((preg_match('/^[a-zA-Z0-9._\-\s]+\.[a-zA-Z0-9]+$/', $fileName) || preg_match('/^[a-zA-Z0-9._\-\s]+$/', $fileName)) ? 'YES' : 'NO'), true);
-            }
+        $this->log("Binary format validation checks:");
+        foreach ($checks as $check => $result) {
+            $this->log("- $check: " . ($result ? 'PASS' : 'FAIL'));
         }
 
-        return $isValid;
+        $isValid = array_product($checks); // All checks must pass
+
+        $this->log("Binary format validation result: " . ($isValid ? 'PASSED' : 'FAILED'));
+        
+        if (!$isValid) {
+            $this->log("Archive will be processed as legacy text format due to failed validation");
+        }
+
+        return (bool)$isValid;
     }
 
     /**
@@ -374,6 +381,49 @@ class HostingerMigrationImporter {
             $fileCount, 
             $totalTime
         ));
+
+        // Check if extraction was successful
+        if ($fileCount === 0) {
+            throw new \Exception("No files were extracted from the binary archive. The archive may be corrupt or in an unsupported format.");
+        }
+    }
+
+    /**
+     * Analyze archive format for better error reporting
+     */
+    private function analyzeArchiveFormat(string $filepath): void
+    {
+        $fp = fopen($filepath, "rb");
+        if (!$fp) {
+            return;
+        }
+
+        $fileSize = filesize($filepath);
+        $this->log("Archive file size: " . number_format($fileSize) . " bytes");
+
+        // Read first 1KB to analyze format
+        $firstBytes = fread($fp, 1024);
+        $this->log("First " . strlen($firstBytes) . " bytes read for analysis");
+
+        // Check for common archive markers
+        $hasFileMarkers = substr_count($firstBytes, '__file__:');
+        $hasSizeMarkers = substr_count($firstBytes, '__size__:');
+        $hasEndMarkers = substr_count($firstBytes, '__endfile__');
+        
+        $this->log("Text format markers found - File: $hasFileMarkers, Size: $hasSizeMarkers, End: $hasEndMarkers");
+
+        // Check if file is mostly binary
+        $binaryCharCount = 0;
+        for ($i = 0; $i < strlen($firstBytes); $i++) {
+            $ord = ord($firstBytes[$i]);
+            if ($ord < 32 && $ord !== 10 && $ord !== 13 && $ord !== 9) {
+                $binaryCharCount++;
+            }
+        }
+        $binaryPercentage = ($binaryCharCount / strlen($firstBytes)) * 100;
+        $this->log(sprintf("Binary content analysis: %.2f%% non-printable characters", $binaryPercentage));
+
+        fclose($fp);
     }
 
     /**
@@ -467,6 +517,11 @@ class HostingerMigrationImporter {
             $fileCount,
             $totalTime
         ));
+
+        // Check if extraction was successful
+        if ($fileCount === 0) {
+            throw new \Exception("No files were extracted from the archive. The archive may be corrupt or in an unsupported format.");
+        }
     }
 
     /**
@@ -579,6 +634,16 @@ try {
     $importer->run();
     
 } catch (\Throwable $e) {
-    echo "Unexpected error: " . $e->getMessage() . PHP_EOL;
+    echo "FATAL ERROR: " . $e->getMessage() . PHP_EOL;
+    
+    // Log error details
+    $logFile = (getcwd() !== false ? getcwd() : '/tmp') . '/hostinger-migrator-import-log.txt';
+    $timestamp = date('Y-m-d H:i:s');
+    $errorLog = "\n[{$timestamp}] FATAL ERROR: " . $e->getMessage() . "\n";
+    $errorLog .= "[{$timestamp}] Stack trace: " . $e->getTraceAsString() . "\n";
+    file_put_contents($logFile, $errorLog, FILE_APPEND);
+    
+    echo "Full error details logged to: $logFile" . PHP_EOL;
+    echo "Stack trace:" . PHP_EOL . $e->getTraceAsString() . PHP_EOL;
     exit(1);
 }
