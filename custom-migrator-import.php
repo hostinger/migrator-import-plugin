@@ -65,7 +65,7 @@ class HostingerMigrationImporter {
     public function __construct(array $options)
     {
         if (!isset($options['file'])) {
-            $this->displayError('Archive file name is required. Use --file=filename.hstgr');
+            throw new \InvalidArgumentException('Archive file name is required. Use --file=filename.hstgr');
         }
 
         $this->archiveFile = $options['file'];
@@ -626,24 +626,20 @@ try {
     }
     
     if (empty($options) || isset($options['help'])) {
-        $importer = new HostingerMigrationImporter([]);
-        exit(0);
+        throw new \InvalidArgumentException('No valid options provided. Use --file=filename.hstgr');
     }
     
     $importer = new HostingerMigrationImporter($options);
     $importer->run();
     
 } catch (\Throwable $e) {
-    echo "FATAL ERROR: " . $e->getMessage() . PHP_EOL;
-    
-    // Log error details
+    // Log error details for debugging
     $logFile = (getcwd() !== false ? getcwd() : '/tmp') . '/hostinger-migrator-import-log.txt';
     $timestamp = date('Y-m-d H:i:s');
     $errorLog = "\n[{$timestamp}] FATAL ERROR: " . $e->getMessage() . "\n";
     $errorLog .= "[{$timestamp}] Stack trace: " . $e->getTraceAsString() . "\n";
     file_put_contents($logFile, $errorLog, FILE_APPEND);
     
-    echo "Full error details logged to: $logFile" . PHP_EOL;
-    echo "Stack trace:" . PHP_EOL . $e->getTraceAsString() . PHP_EOL;
-    exit(1);
+    // Re-throw the exception to be caught by the calling application
+    throw $e;
 }
