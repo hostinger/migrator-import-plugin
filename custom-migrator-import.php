@@ -245,6 +245,7 @@ class HostingerMigrationImporter {
         $fileCount = 0;
         $startTime = microtime(true);
         $blockSize = 4375; // filename(255), size(4), date(4), path(4112) = 4375 bytes
+        $stoppedDueToCorruption = false; // Track if we stopped due to invalid data
         
         $this->log("Starting binary archive extraction...");
 
@@ -267,6 +268,7 @@ class HostingerMigrationImporter {
                     $hexData = bin2hex(substr($block, 0, 32));
                     $this->log("Block hex data: $hexData", true);
                 }
+                $stoppedDueToCorruption = true;
                 break;
             }
 
@@ -281,6 +283,7 @@ class HostingerMigrationImporter {
                 if ($this->debugMode) {
                     $this->log("File: '$fileName', Size: $fileSize, Path: '$filePath'", true);
                 }
+                $stoppedDueToCorruption = true;
                 break;
             }
 
@@ -385,6 +388,11 @@ class HostingerMigrationImporter {
         // Check if extraction was successful
         if ($fileCount === 0) {
             throw new \Exception("No files were extracted from the binary archive. The archive may be corrupt or in an unsupported format.");
+        }
+
+        // CRITICAL: Fail if extraction stopped due to corruption
+        if ($stoppedDueToCorruption) {
+            throw new \Exception("Archive extraction FAILED: Extraction stopped due to invalid file data or corruption after extracting $fileCount files. The archive appears to be damaged and the import is incomplete.");
         }
     }
 
