@@ -94,7 +94,6 @@ class HostingerMigrationImporter {
      */
     public function run(): void
     {
-        try {
             $this->log("=== Hostinger Migration Import Started ===");
             $this->log("Archive File: {$this->archiveFile}");
             $this->log("Destination: {$this->workingDir}");
@@ -118,10 +117,6 @@ class HostingerMigrationImporter {
             }
 
             $this->displayFinalInstructions();
-
-        } catch (\Exception $e) {
-            $this->displayError($e->getMessage());
-        }
     }
 
     /**
@@ -277,6 +272,15 @@ class HostingerMigrationImporter {
             $fileDate = $data['date'];
             $filePath = trim($data['path'], "\0");
 
+            // Apply same safe character handling as export using centralized methods
+            // The export uses encode_for_binary() before packing, so we need decode_from_binary() after unpacking
+            $fileName = $this->decode_from_binary($fileName);
+            $filePath = $this->decode_from_binary($filePath);
+
+            // Additional null byte sanitization as final safety measure
+            $fileName = str_replace("\0", '', $fileName);
+            $filePath = str_replace("\0", '', $filePath);
+
             // Basic validation
             if (empty($fileName) || $fileSize < 0 || $fileSize > 1024 * 1024 * 1024) {
                 $this->log("Invalid file data detected, stopping extraction");
@@ -287,8 +291,17 @@ class HostingerMigrationImporter {
                 break;
             }
 
-            // Construct full paths
-            $relativePath = $filePath . '/' . $fileName;
+            // Additional validation for null bytes in paths (causes mkdir() failures)
+            if (strpos($fileName, "\0") !== false || strpos($filePath, "\0") !== false) {
+                throw new \Exception("Null bytes detected in file path data at file #$fileCount. Archive is corrupted.");
+            }
+
+            // Construct full paths using custom migrator logic (same as helper class)
+            if (empty($filePath) || $filePath === '.') {
+                $relativePath = $fileName;
+            } else {
+                $relativePath = $filePath . DIRECTORY_SEPARATOR . $fileName;
+            }
             $relativePath = ltrim($relativePath, '/');
             $fullPath = $this->workingDir . '/' . $relativePath;
 
@@ -303,7 +316,10 @@ class HostingerMigrationImporter {
                     $this->log("Failed to create directory: $dir");
                     // Skip this file by reading its content
                     if ($fileSize > 0) {
-                        fseek($fp, $fileSize, SEEK_CUR);
+                        $seekResult = fseek($fp, $fileSize, SEEK_CUR);
+                        if ($seekResult !== 0) {
+                            throw new \Exception("Failed to seek past file content in archive. Archive may be corrupted.");
+                        }
                     }
                     continue;
                 }
@@ -315,7 +331,10 @@ class HostingerMigrationImporter {
                 if (!$targetFp) {
                     $this->log("Cannot create file: {$fullPath}");
                     // Skip file content
-                    fseek($fp, $fileSize, SEEK_CUR);
+                    $seekResult = fseek($fp, $fileSize, SEEK_CUR);
+                    if ($seekResult !== 0) {
+                        throw new \Exception("Failed to seek past file content in archive. Archive may be corrupted.");
+                    }
                     continue;
                 }
 
@@ -328,21 +347,22 @@ class HostingerMigrationImporter {
                     $content = fread($fp, $readSize);
 
                     if ($content === false) {
-                        $this->log("Error reading file content for: {$relativePath}");
-                        break;
+                        fclose($targetFp);
+                        throw new \Exception("Error reading file content for: {$relativePath}. Archive may be corrupted.");
                     }
 
                     if (strlen($content) == 0) {
                         if ($bytesRemaining > 0) {
-                            $this->log("Unexpected end of archive while reading: {$relativePath}");
+                            fclose($targetFp);
+                            throw new \Exception("Unexpected end of archive while reading: {$relativePath}. Archive is incomplete or corrupted.");
                         }
                         break;
                     }
 
                     $written = fwrite($targetFp, $content);
                     if ($written === false) {
-                        $this->log("Error writing file content for: {$relativePath}");
-                        break;
+                        fclose($targetFp);
+                        throw new \Exception("Error writing file content for: {$relativePath}. Disk may be full or permissions issue.");
                     }
 
                     $bytesRemaining -= strlen($content);
@@ -583,6 +603,28 @@ class HostingerMigrationImporter {
         
         exit(1);
     }
+
+    /**
+     * Encode a string for safe binary storage (handles international characters)
+     * This matches the plugin's encoding method
+     *
+     * @param  string $value The string to encode
+     * @return string URL-encoded string safe for binary storage
+     */
+    private function encode_for_binary($value) {
+        return urlencode($value);
+    }
+
+    /**
+     * Decode a string from binary storage (handles international characters)
+     * This matches the plugin's decoding method
+     *
+     * @param  string $value The URL-encoded string from binary storage
+     * @return string Decoded original string
+     */
+    private function decode_from_binary($value) {
+        return urldecode(trim($value, "\0"));
+    }
 }
 
 // Main execution
@@ -647,6 +689,18 @@ try {
     $errorLog = "\n[{$timestamp}] FATAL ERROR: " . $e->getMessage() . "\n";
     $errorLog .= "[{$timestamp}] Stack trace: " . $e->getTraceAsString() . "\n";
     file_put_contents($logFile, $errorLog, FILE_APPEND);
+    
+    // Display error message with usage instructions
+    echo "ERROR: " . $e->getMessage() . "\n";
+    echo "\nUsage: php " . basename(__FILE__) . " --file=filename.hstgr [options]\n";
+    echo "\nOptions:\n";
+    echo "  --file=FILENAME       Required. The .hstgr archive file name\n";
+    echo "  --dest=PATH           Optional. Destination directory (default: current directory)\n";
+    echo "  --skip-content        Skip extracting content files\n";
+    echo "  --verbose             Show detailed output during extraction\n";
+    echo "  --debug               Enable debug mode with detailed file logging\n";
+    echo "\nExample:\n";
+    echo "  php " . basename(__FILE__) . " --file=site_export.hstgr --verbose\n";
     
     // Re-throw the exception to be caught by the calling application
     throw $e;
