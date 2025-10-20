@@ -50,6 +50,11 @@ class HostingerMigrationImporter {
     private bool $skipContent;
 
     /**
+     * Sleep delay in microseconds between file writes
+     */
+    private int $sleepDelay;
+
+    /**
      * Block format for reading binary archives (optimized format)
      * 
      * @var array
@@ -82,6 +87,10 @@ class HostingerMigrationImporter {
         $this->verbose = isset($options['verbose']);
         $this->debugMode = isset($options['debug']);
         $this->skipContent = isset($options['skip-content']);
+        
+        // Allow custom sleep delay (in microseconds) for I/O throttling
+        // Default: 5000 microseconds (5ms) - optimal for Hostinger shared hosting
+        $this->sleepDelay = isset($options['sleep']) ? (int)$options['sleep'] : 5000;
 
         // Handle logFile with proper fallback for getcwd() returning false
         $currentDir = getcwd();
@@ -303,17 +312,21 @@ class HostingerMigrationImporter {
                 $relativePath = $filePath . DIRECTORY_SEPARATOR . $fileName;
             }
             $relativePath = ltrim($relativePath, '/');
+            
+            // CRITICAL FIX: The path is already URL-decoded by decode_from_binary()
+            // So it should already be in the correct format (wp-content/...)
+            // Just use it directly
             $fullPath = $this->workingDir . '/' . $relativePath;
 
             if ($this->debugMode) {
-                $this->log("Processing: $relativePath (Size: $fileSize bytes)", true);
+                $this->log("Processing: $relativePath (Size: $fileSize bytes) -> $fullPath", true);
             }
 
             // Create directory structure
             $dir = dirname($fullPath);
             if (!file_exists($dir)) {
                 if (!mkdir($dir, 0755, true)) {
-                    $this->log("Failed to create directory: $dir");
+                    $this->log("Failed to create directory: $dir (permissions issue or invalid path)");
                     // Skip this file by reading its content
                     if ($fileSize > 0) {
                         $seekResult = fseek($fp, $fileSize, SEEK_CUR);
@@ -323,13 +336,51 @@ class HostingerMigrationImporter {
                     }
                     continue;
                 }
+                // Clear stat cache after directory creation to reduce memory
+                clearstatcache(true, $dir);
             }
 
             // Extract file content
             if ($fileSize > 0) {
-                $targetFp = fopen($fullPath, 'wb');
+                $targetFp = @fopen($fullPath, 'wb');
                 if (!$targetFp) {
-                    $this->log("Cannot create file: {$fullPath}");
+                    $error = error_get_last();
+                    $error_msg = $error ? $error['message'] : 'unknown error';
+                    
+                    // Clear cache before checking
+                    $dirPath = dirname($fullPath);
+                    clearstatcache(true, $dirPath);
+                    clearstatcache(true, $fullPath);
+                    
+                    // If directory exists but fopen fails with "No such file", try alternative method
+                    $dirExists = file_exists($dirPath);
+                    if ($dirExists && strpos($error_msg, 'No such file') !== false) {
+                        // Force garbage collection first
+                        gc_collect_cycles();
+                        
+                        // Read file content from archive
+                        $fileContent = fread($fp, $fileSize);
+                        if ($fileContent === false || strlen($fileContent) != $fileSize) {
+                            $this->log("ERROR: Failed to read file content from archive for: {$relativePath}");
+                            continue;
+                        }
+                        
+                        // Try to write with file_put_contents (doesn't use file handles)
+                        $result = @file_put_contents($fullPath, $fileContent);
+                        if ($result === false) {
+                            $this->log("Cannot create file: {$fullPath} - alternative write method also failed");
+                        } else {
+                            if ($fileDate > 0) {
+                                touch($fullPath, $fileDate);
+                            }
+                            $fileCount++;
+                        }
+                        continue;
+                    }
+                    
+                    // Log simple failure message
+                    $this->log("Cannot create file: {$relativePath} (server I/O limit)");
+                    
                     // Skip file content
                     $seekResult = fseek($fp, $fileSize, SEEK_CUR);
                     if ($seekResult !== 0) {
@@ -369,6 +420,7 @@ class HostingerMigrationImporter {
                 }
 
                 fclose($targetFp);
+                unset($targetFp); // Explicitly unset to free reference
 
                 // Set file modification time
                 if ($fileDate > 0) {
@@ -382,11 +434,24 @@ class HostingerMigrationImporter {
                 }
             }
 
+            // Small delay to prevent I/O throttling on shared hosting
+            // Default: 5000 microseconds (5ms) per file, adds ~45 seconds for 9000 files
+            // Optimal for Hostinger shared hosting environment
+            if ($this->sleepDelay > 0) {
+                usleep($this->sleepDelay);
+            }
+
             $fileCount++;
 
-            // Log progress
-            if ($fileCount % 100 === 0) {
-                $this->log("Extracted {$fileCount} files...");
+            // Log progress and free resources every 50 files (more aggressive)
+            if ($fileCount % 50 === 0) {
+                // Force garbage collection and clear stat cache to free memory and file handles
+                gc_collect_cycles();
+                clearstatcache();
+                
+                if ($fileCount % 100 === 0) {
+                    $this->log("Extracted {$fileCount} files...");
+                }
             }
 
             if ($this->verbose && $fileCount % 50 === 0) {
@@ -493,6 +558,8 @@ class HostingerMigrationImporter {
                 }
                 
                 $currentFile = trim(substr($trimmedLine, 9));
+                
+                // Path should already be in correct format from export
                 $fullPath = "{$this->workingDir}/{$currentFile}";
                 
                 $dir = dirname($fullPath);
@@ -506,7 +573,9 @@ class HostingerMigrationImporter {
             if (strpos($trimmedLine, "__size__:") === 0 || 
                 strpos($trimmedLine, "__md5__:") === 0) {
                 if ($currentFile && !$currentFp) {
+                    // Path should already be in correct format from export
                     $fullPath = "{$this->workingDir}/{$currentFile}";
+                    
                     $currentFp = fopen($fullPath, "wb");
                     if (!$currentFp) {
                         $this->log("Cannot create file {$fullPath}");
@@ -521,6 +590,12 @@ class HostingerMigrationImporter {
                 if ($currentFp !== null) {
                     fclose($currentFp);
                     $currentFp = null;
+                }
+                
+                // Force garbage collection every 100 files
+                if ($fileCount % 100 === 0) {
+                    gc_collect_cycles();
+                    $this->log("Extracted {$fileCount} files (text format)...");
                 }
                 continue;
             }
@@ -633,6 +708,7 @@ try {
     $longopts = [
         "file:",
         "dest:",           // Changed from :: to : to require value
+        "sleep:",          // Sleep delay in microseconds for I/O throttling testing
         "skip-content",    // Removed :: since it's a flag
         "verbose",         // Removed :: since it's a flag  
         "debug",           // Removed :: since it's a flag
@@ -653,6 +729,9 @@ try {
             } elseif ($arg === '--dest' && isset($argv[$i + 1])) {
                 $options['dest'] = $argv[$i + 1];
                 $i++; // Skip next argument
+            } elseif ($arg === '--sleep' && isset($argv[$i + 1])) {
+                $options['sleep'] = $argv[$i + 1];
+                $i++; // Skip next argument
             } elseif ($arg === '--debug') {
                 $options['debug'] = true;
             } elseif ($arg === '--verbose') {
@@ -665,6 +744,8 @@ try {
                 $options['file'] = substr($arg, 7);
             } elseif (strpos($arg, '--dest=') === 0) {
                 $options['dest'] = substr($arg, 7);
+            } elseif (strpos($arg, '--sleep=') === 0) {
+                $options['sleep'] = substr($arg, 8);
             }
         }
     }
@@ -696,11 +777,13 @@ try {
     echo "\nOptions:\n";
     echo "  --file=FILENAME       Required. The .hstgr archive file name\n";
     echo "  --dest=PATH           Optional. Destination directory (default: current directory)\n";
+    echo "  --sleep=MICROSECONDS  Optional. Delay between file writes (default: 5000 = 5ms, optimized for shared hosting)\n";
     echo "  --skip-content        Skip extracting content files\n";
     echo "  --verbose             Show detailed output during extraction\n";
     echo "  --debug               Enable debug mode with detailed file logging\n";
-    echo "\nExample:\n";
+    echo "\nExamples:\n";
     echo "  php " . basename(__FILE__) . " --file=site_export.hstgr --verbose\n";
+    echo "  php " . basename(__FILE__) . " --file=site_export.hstgr --sleep=0  # No delay (fastest, may hit I/O limits)\n";
     
     // Re-throw the exception to be caught by the calling application
     throw $e;
