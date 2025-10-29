@@ -290,6 +290,18 @@ class HostingerMigrationImporter {
             $fileName = str_replace("\0", '', $fileName);
             $filePath = str_replace("\0", '', $filePath);
 
+            $hasBadChars = (bool)preg_match('/[\x00-\x1F\x7F\x{200B}-\x{200D}\x{2060}\x{FEFF}\x{202A}-\x{202E}\x{2066}-\x{2069}]/u', $fileName . $filePath);
+            $pathPattern = '/^.{0,4112}$/us';
+            $filenamePattern = '/^[^\/]{1,255}$/us';
+            $isUnsafeAbsolute = function(string $p): bool { return $p !== '' && ($p[0] === '/' || $p[0] === '\\'); };
+            $hasTraversal = (strpos($filePath, '..') !== false);
+            $ext = pathinfo($fileName, PATHINFO_EXTENSION);
+            $tooLongNoExt = (strlen($fileName) > 80 && $ext === '');
+            if ($hasBadChars || !preg_match($pathPattern, $filePath) || !preg_match($filenamePattern, $fileName) || $isUnsafeAbsolute($filePath) || $hasTraversal || $tooLongNoExt) {
+                $this->log("Invalid header path/filename detected at file #{$fileCount}. Aborting extraction to avoid corrupt paths.\n- filename: '" . addslashes($fileName) . "'\n- path: '" . addslashes($filePath) . "'", false);
+                $stoppedDueToCorruption = true;
+                break;
+            }
             // Basic validation
             if (empty($fileName) || $fileSize < 0 || $fileSize > 1024 * 1024 * 1024) {
                 $this->log("Invalid file data detected, stopping extraction");
@@ -324,8 +336,8 @@ class HostingerMigrationImporter {
 
             // Create directory structure
             $dir = dirname($fullPath);
-            if (!file_exists($dir)) {
-                if (!mkdir($dir, 0755, true)) {
+            if (!is_dir($dir)) {
+                if (!mkdir($dir, 0755, true) && !is_dir($dir)) {
                     $this->log("Failed to create directory: $dir (permissions issue or invalid path)");
                     // Skip this file by reading its content
                     if ($fileSize > 0) {
@@ -557,13 +569,13 @@ class HostingerMigrationImporter {
                     fclose($currentFp);
                 }
                 
-                $currentFile = trim(substr($trimmedLine, 9));
+                $currentFile = $this->decode_from_binary(trim(substr($trimmedLine, 9)));
                 
                 // Path should already be in correct format from export
                 $fullPath = "{$this->workingDir}/{$currentFile}";
                 
                 $dir = dirname($fullPath);
-                if (!file_exists($dir)) {
+                if (!is_dir($dir)) {
                     mkdir($dir, 0755, true);
                 }
                 
@@ -692,13 +704,36 @@ class HostingerMigrationImporter {
 
     /**
      * Decode a string from binary storage (handles international characters)
-     * This matches the plugin's decoding method
+     * This matches the plugin's decoding method and also decodes Info-ZIP style #Uhhhh escapes
      *
      * @param  string $value The URL-encoded string from binary storage
      * @return string Decoded original string
      */
     private function decode_from_binary($value) {
-        return urldecode(trim($value, "\0"));
+        // Trim NULs from fixed-width binary fields
+        $value = trim($value, "\0");
+        // If exporter used URL-encoding, decode it
+        if (strpos($value, '%') !== false) {
+            $value = urldecode($value);
+        }
+        // Decode Info-ZIP style escapes: #Uhhhh or #Uhhhhhh (hex code points)
+        if (strpos($value, '#U') !== false) {
+            $value = preg_replace_callback('/#U([0-9A-Fa-f]{4,6})/', function ($m) {
+                $cp = hexdec($m[1]);
+                // Convert code point to UTF-8 using iconv (portable)
+                $utf8 = @iconv('UCS-4BE', 'UTF-8', pack('N', $cp));
+                if ($utf8 !== false) {
+                    return $utf8;
+                }
+                // Fallback via HTML entities if mbstring is available
+                if (function_exists('mb_convert_encoding')) {
+                    return mb_convert_encoding('&#x' . strtoupper(dechex($cp)) . ';', 'UTF-8', 'HTML-ENTITIES');
+                }
+                // Last resort: leave the original escape
+                return $m[0];
+            }, $value);
+        }
+        return $value;
     }
 }
 
