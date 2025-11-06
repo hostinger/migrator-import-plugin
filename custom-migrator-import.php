@@ -56,12 +56,12 @@ class HostingerMigrationImporter {
 
     /**
      * Block format for reading binary archives (optimized format)
-     * 
+     *
      * @var array
      */
     private array $blockFormat = [
-        'pack' => 'a255VVa4112',  // filename(255), size(4), date(4), path(4112) = 4375 bytes
-        'unpack' => 'a255filename/Vsize/Vdate/a4112path'  // For unpack: named fields
+            'pack' => 'a255VVa4112',  // filename(255), size(4), date(4), path(4112) = 4375 bytes
+            'unpack' => 'a255filename/Vsize/Vdate/a4112path'  // For unpack: named fields
     ];
 
     /**
@@ -74,7 +74,7 @@ class HostingerMigrationImporter {
         }
 
         $this->archiveFile = $options['file'];
-        
+
         // Handle workingDir with proper fallback for getcwd() returning false
         if (isset($options['dest'])) {
             $this->workingDir = $options['dest'];
@@ -83,11 +83,11 @@ class HostingerMigrationImporter {
             $this->workingDir = $currentDir !== false ? $currentDir : '/tmp';
         }
         $this->workingDir = rtrim($this->workingDir, '/');
-        
+
         $this->verbose = isset($options['verbose']);
         $this->debugMode = isset($options['debug']);
         $this->skipContent = isset($options['skip-content']);
-        
+
         // Allow custom sleep delay (in microseconds) for I/O throttling
         // Default: 5000 microseconds (5ms) - optimal for Hostinger shared hosting
         $this->sleepDelay = isset($options['sleep']) ? (int)$options['sleep'] : 5000;
@@ -103,29 +103,29 @@ class HostingerMigrationImporter {
      */
     public function run(): void
     {
-            $this->log("=== Hostinger Migration Import Started ===");
-            $this->log("Archive File: {$this->archiveFile}");
-            $this->log("Destination: {$this->workingDir}");
-            $this->log("Verbose Mode: " . ($this->verbose ? 'Enabled' : 'Disabled'));
+        $this->log("=== Hostinger Migration Import Started ===");
+        $this->log("Archive File: {$this->archiveFile}");
+        $this->log("Destination: {$this->workingDir}");
+        $this->log("Verbose Mode: " . ($this->verbose ? 'Enabled' : 'Disabled'));
 
-            $fullArchivePath = $this->findArchiveFile();
+        $fullArchivePath = $this->findArchiveFile();
 
-            if ($this->skipContent) {
-                $this->log("=== Skipping content extraction ===");
-                return;
-            }
+        if ($this->skipContent) {
+            $this->log("=== Skipping content extraction ===");
+            return;
+        }
 
-            // Check if this is a binary archive or legacy text archive
-            if ($this->isBinaryArchive($fullArchivePath)) {
-                $this->log("Detected binary archive format (optimized 4375-byte headers)");
-                $this->extractBinaryArchive($fullArchivePath);
-            } else {
-                $this->log("Detected legacy text archive format, using fallback method");
-                $this->analyzeArchiveFormat($fullArchivePath);
-                $this->fallbackTextExtract($fullArchivePath);
-            }
+        // Check if this is a binary archive or legacy text archive
+        if ($this->isBinaryArchive($fullArchivePath)) {
+            $this->log("Detected binary archive format (optimized 4375-byte headers)");
+            $this->extractBinaryArchive($fullArchivePath);
+        } else {
+            $this->log("Detected legacy text archive format, using fallback method");
+            $this->analyzeArchiveFormat($fullArchivePath);
+            $this->fallbackTextExtract($fullArchivePath);
+        }
 
-            $this->displayFinalInstructions();
+        $this->displayFinalInstructions();
     }
 
     /**
@@ -136,12 +136,12 @@ class HostingerMigrationImporter {
         // Get current directory with fallback
         $currentDir = getcwd();
         $currentDirPath = $currentDir !== false ? $currentDir : dirname($this->archiveFile);
-        
+
         $searchPaths = [
-            $this->archiveFile,
-            $currentDirPath . '/' . $this->archiveFile,
-            $currentDirPath . '/wp-content/hostinger-migration-archives/' . $this->archiveFile,
-            $this->workingDir . '/wp-content/hostinger-migration-archives/' . $this->archiveFile
+                $this->archiveFile,
+                $currentDirPath . '/' . $this->archiveFile,
+                $currentDirPath . '/wp-content/hostinger-migration-archives/' . $this->archiveFile,
+                $this->workingDir . '/wp-content/hostinger-migration-archives/' . $this->archiveFile
         ];
 
         foreach ($searchPaths as $path) {
@@ -168,7 +168,7 @@ class HostingerMigrationImporter {
         $blockSize = 4375;
         $block = fread($fp, $blockSize);
         fclose($fp);
-        
+
         if (strlen($block) < $blockSize) {
             $this->log("Binary detection failed: Archive too small for binary format: " . strlen($block) . " bytes (need $blockSize)");
             return false;
@@ -176,7 +176,7 @@ class HostingerMigrationImporter {
 
         // Try to unpack as binary format
         $data = @unpack($this->blockFormat['unpack'], $block);
-        
+
         if (!$data || !isset($data['filename'], $data['size'], $data['date'], $data['path'])) {
             $this->log("Binary detection failed: Failed to unpack first block as binary format");
             if ($this->debugMode) {
@@ -213,11 +213,11 @@ class HostingerMigrationImporter {
         // More permissive filename pattern - allow more characters and Unicode
         $checks['filename_pattern_ok'] = (
             // Standard ASCII filename
-            preg_match('/^[a-zA-Z0-9._\-\s]+(\.[a-zA-Z0-9]+)?$/', $fileName) ||
-            // Allow more special characters common in filenames
-            preg_match('/^[a-zA-Z0-9._\-\s\(\)\[\]&@%+]+(\.[a-zA-Z0-9]+)?$/u', $fileName) ||
-            // Fallback: just check if it's not empty and reasonable length
-            (!empty($fileName) && strlen($fileName) <= 255 && !preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $fileName))
+                preg_match('/^[a-zA-Z0-9._\-\s]+(\.[a-zA-Z0-9]+)?$/', $fileName) ||
+                // Allow more special characters common in filenames
+                preg_match('/^[a-zA-Z0-9._\-\s\(\)\[\]&@%+]+(\.[a-zA-Z0-9]+)?$/u', $fileName) ||
+                // Fallback: just check if it's not empty and reasonable length
+                (!empty($fileName) && strlen($fileName) <= 255 && !preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $fileName))
         );
 
         $this->log("Binary format validation checks:");
@@ -228,7 +228,7 @@ class HostingerMigrationImporter {
         $isValid = array_product($checks); // All checks must pass
 
         $this->log("Binary format validation result: " . ($isValid ? 'PASSED' : 'FAILED'));
-        
+
         if (!$isValid) {
             $this->log("Archive will be processed as legacy text format due to failed validation");
         }
@@ -250,13 +250,13 @@ class HostingerMigrationImporter {
         $startTime = microtime(true);
         $blockSize = 4375; // filename(255), size(4), date(4), path(4112) = 4375 bytes
         $stoppedDueToCorruption = false; // Track if we stopped due to invalid data
-        
+
         $this->log("Starting binary archive extraction...");
 
         while (!feof($fp)) {
             // Read file header block
             $block = fread($fp, $blockSize);
-            
+
             if (strlen($block) < $blockSize) {
                 if (strlen($block) > 0) {
                     $this->log("Incomplete block at end of file, stopping extraction");
@@ -290,18 +290,6 @@ class HostingerMigrationImporter {
             $fileName = str_replace("\0", '', $fileName);
             $filePath = str_replace("\0", '', $filePath);
 
-            $hasBadChars = (bool)preg_match('/[\x00-\x1F\x7F\x{200B}-\x{200D}\x{2060}\x{FEFF}\x{202A}-\x{202E}\x{2066}-\x{2069}]/u', $fileName . $filePath);
-            $pathPattern = '/^.{0,4112}$/us';
-            $filenamePattern = '/^[^\/]{1,255}$/us';
-            $isUnsafeAbsolute = function(string $p): bool { return $p !== '' && ($p[0] === '/' || $p[0] === '\\'); };
-            $hasTraversal = (strpos($filePath, '..') !== false);
-            $ext = pathinfo($fileName, PATHINFO_EXTENSION);
-            $tooLongNoExt = (strlen($fileName) > 80 && $ext === '');
-            if ($hasBadChars || !preg_match($pathPattern, $filePath) || !preg_match($filenamePattern, $fileName) || $isUnsafeAbsolute($filePath) || $hasTraversal || $tooLongNoExt) {
-                $this->log("Invalid header path/filename detected at file #{$fileCount}. Aborting extraction to avoid corrupt paths.\n- filename: '" . addslashes($fileName) . "'\n- path: '" . addslashes($filePath) . "'", false);
-                $stoppedDueToCorruption = true;
-                break;
-            }
             // Basic validation
             if (empty($fileName) || $fileSize < 0 || $fileSize > 1024 * 1024 * 1024) {
                 $this->log("Invalid file data detected, stopping extraction");
@@ -324,7 +312,7 @@ class HostingerMigrationImporter {
                 $relativePath = $filePath . DIRECTORY_SEPARATOR . $fileName;
             }
             $relativePath = ltrim($relativePath, '/');
-            
+
             // CRITICAL FIX: The path is already URL-decoded by decode_from_binary()
             // So it should already be in the correct format (wp-content/...)
             // Just use it directly
@@ -358,25 +346,25 @@ class HostingerMigrationImporter {
                 if (!$targetFp) {
                     $error = error_get_last();
                     $error_msg = $error ? $error['message'] : 'unknown error';
-                    
+
                     // Clear cache before checking
                     $dirPath = dirname($fullPath);
                     clearstatcache(true, $dirPath);
                     clearstatcache(true, $fullPath);
-                    
+
                     // If directory exists but fopen fails with "No such file", try alternative method
                     $dirExists = file_exists($dirPath);
                     if ($dirExists && strpos($error_msg, 'No such file') !== false) {
                         // Force garbage collection first
                         gc_collect_cycles();
-                        
+
                         // Read file content from archive
                         $fileContent = fread($fp, $fileSize);
                         if ($fileContent === false || strlen($fileContent) != $fileSize) {
                             $this->log("ERROR: Failed to read file content from archive for: {$relativePath}");
                             continue;
                         }
-                        
+
                         // Try to write with file_put_contents (doesn't use file handles)
                         $result = @file_put_contents($fullPath, $fileContent);
                         if ($result === false) {
@@ -389,10 +377,10 @@ class HostingerMigrationImporter {
                         }
                         continue;
                     }
-                    
+
                     // Log simple failure message
                     $this->log("Cannot create file: {$relativePath} (server I/O limit)");
-                    
+
                     // Skip file content
                     $seekResult = fseek($fp, $fileSize, SEEK_CUR);
                     if ($seekResult !== 0) {
@@ -460,7 +448,7 @@ class HostingerMigrationImporter {
                 // Force garbage collection and clear stat cache to free memory and file handles
                 gc_collect_cycles();
                 clearstatcache();
-                
+
                 if ($fileCount % 100 === 0) {
                     $this->log("Extracted {$fileCount} files...");
                 }
@@ -477,9 +465,9 @@ class HostingerMigrationImporter {
 
         $totalTime = microtime(true) - $startTime;
         $this->log(sprintf(
-            "Binary extraction complete. Extracted %d files in %.2f seconds", 
-            $fileCount, 
-            $totalTime
+                "Binary extraction complete. Extracted %d files in %.2f seconds",
+                $fileCount,
+                $totalTime
         ));
 
         // Check if extraction was successful
@@ -514,7 +502,7 @@ class HostingerMigrationImporter {
         $hasFileMarkers = substr_count($firstBytes, '__file__:');
         $hasSizeMarkers = substr_count($firstBytes, '__size__:');
         $hasEndMarkers = substr_count($firstBytes, '__endfile__');
-        
+
         $this->log("Text format markers found - File: $hasFileMarkers, Size: $hasSizeMarkers, End: $hasEndMarkers");
 
         // Check if file is mostly binary
@@ -563,31 +551,31 @@ class HostingerMigrationImporter {
             $line = fgets($fp);
             if (empty($line)) continue;
             $trimmedLine = trim($line);
-            
+
             if (strpos($trimmedLine, "__file__:") === 0) {
                 if ($currentFp !== null) {
                     fclose($currentFp);
                 }
-                
-                $currentFile = $this->decode_from_binary(trim(substr($trimmedLine, 9)));
-                
+
+                $currentFile = trim(substr($trimmedLine, 9));
+
                 // Path should already be in correct format from export
                 $fullPath = "{$this->workingDir}/{$currentFile}";
-                
+
                 $dir = dirname($fullPath);
                 if (!is_dir($dir)) {
                     mkdir($dir, 0755, true);
                 }
-                
+
                 continue;
             }
-            
-            if (strpos($trimmedLine, "__size__:") === 0 || 
-                strpos($trimmedLine, "__md5__:") === 0) {
+
+            if (strpos($trimmedLine, "__size__:") === 0 ||
+                    strpos($trimmedLine, "__md5__:") === 0) {
                 if ($currentFile && !$currentFp) {
                     // Path should already be in correct format from export
                     $fullPath = "{$this->workingDir}/{$currentFile}";
-                    
+
                     $currentFp = fopen($fullPath, "wb");
                     if (!$currentFp) {
                         $this->log("Cannot create file {$fullPath}");
@@ -597,13 +585,13 @@ class HostingerMigrationImporter {
                 }
                 continue;
             }
-            
+
             if ($trimmedLine === "__endfile__") {
                 if ($currentFp !== null) {
                     fclose($currentFp);
                     $currentFp = null;
                 }
-                
+
                 // Force garbage collection every 100 files
                 if ($fileCount % 100 === 0) {
                     gc_collect_cycles();
@@ -611,16 +599,16 @@ class HostingerMigrationImporter {
                 }
                 continue;
             }
-            
+
             if ($trimmedLine === "__done__") {
                 break;
             }
-            
+
             if ($currentFp !== null) {
                 fwrite($currentFp, $line);
             }
         }
-        
+
         if ($currentFp !== null) {
             fclose($currentFp);
         }
@@ -628,9 +616,9 @@ class HostingerMigrationImporter {
 
         $totalTime = microtime(true) - $startTime;
         $this->log(sprintf(
-            "Fallback extraction complete. Extracted %d files in %.2f seconds", 
-            $fileCount,
-            $totalTime
+                "Fallback extraction complete. Extracted %d files in %.2f seconds",
+                $fileCount,
+                $totalTime
         ));
 
         // Check if extraction was successful
@@ -661,7 +649,7 @@ class HostingerMigrationImporter {
     private function log(string $message, bool $debugOnly = false): void
     {
         $shouldDisplay = !$debugOnly || ($debugOnly && $this->debugMode);
-        
+
         if ($shouldDisplay) {
             echo $message . PHP_EOL;
         }
@@ -677,7 +665,7 @@ class HostingerMigrationImporter {
     private function displayError(string $message): void
     {
         $this->log("ERROR: {$message}");
-        
+
         echo "\nUsage: php " . basename(__FILE__) . " --file=filename.hstgr [options]\n";
         echo "\nOptions:\n";
         echo "  --file=FILENAME       Required. The .hstgr archive file name\n";
@@ -687,7 +675,7 @@ class HostingerMigrationImporter {
         echo "  --debug               Enable debug mode with detailed file logging\n";
         echo "\nExample:\n";
         echo "  php " . basename(__FILE__) . " --file=site_export.hstgr --verbose\n";
-        
+
         exit(1);
     }
 
@@ -704,36 +692,13 @@ class HostingerMigrationImporter {
 
     /**
      * Decode a string from binary storage (handles international characters)
-     * This matches the plugin's decoding method and also decodes Info-ZIP style #Uhhhh escapes
+     * This matches the plugin's decoding method
      *
      * @param  string $value The URL-encoded string from binary storage
      * @return string Decoded original string
      */
     private function decode_from_binary($value) {
-        // Trim NULs from fixed-width binary fields
-        $value = trim($value, "\0");
-        // If exporter used URL-encoding, decode it
-        if (strpos($value, '%') !== false) {
-            $value = urldecode($value);
-        }
-        // Decode Info-ZIP style escapes: #Uhhhh or #Uhhhhhh (hex code points)
-        if (strpos($value, '#U') !== false) {
-            $value = preg_replace_callback('/#U([0-9A-Fa-f]{4,6})/', function ($m) {
-                $cp = hexdec($m[1]);
-                // Convert code point to UTF-8 using iconv (portable)
-                $utf8 = @iconv('UCS-4BE', 'UTF-8', pack('N', $cp));
-                if ($utf8 !== false) {
-                    return $utf8;
-                }
-                // Fallback via HTML entities if mbstring is available
-                if (function_exists('mb_convert_encoding')) {
-                    return mb_convert_encoding('&#x' . strtoupper(dechex($cp)) . ';', 'UTF-8', 'HTML-ENTITIES');
-                }
-                // Last resort: leave the original escape
-                return $m[0];
-            }, $value);
-        }
-        return $value;
+        return urldecode(trim($value, "\0"));
     }
 }
 
@@ -741,23 +706,23 @@ class HostingerMigrationImporter {
 try {
     // Handle both formats: --file=value and --file value
     $longopts = [
-        "file:",
-        "dest:",           // Changed from :: to : to require value
-        "sleep:",          // Sleep delay in microseconds for I/O throttling testing
-        "skip-content",    // Removed :: since it's a flag
-        "verbose",         // Removed :: since it's a flag  
-        "debug",           // Removed :: since it's a flag
-        "help"             // Removed :: since it's a flag
+            "file:",
+            "dest:",           // Changed from :: to : to require value
+            "sleep:",          // Sleep delay in microseconds for I/O throttling testing
+            "skip-content",    // Removed :: since it's a flag
+            "verbose",         // Removed :: since it's a flag
+            "debug",           // Removed :: since it's a flag
+            "help"             // Removed :: since it's a flag
     ];
-    
+
     $options = getopt("", $longopts);
-    
+
     // Fallback: Manual parsing for space-separated arguments
     if (empty($options['file']) && count($argv) > 1) {
         $options = [];
         for ($i = 1; $i < count($argv); $i++) {
             $arg = $argv[$i];
-            
+
             if ($arg === '--file' && isset($argv[$i + 1])) {
                 $options['file'] = $argv[$i + 1];
                 $i++; // Skip next argument
@@ -784,20 +749,20 @@ try {
             }
         }
     }
-    
+
     // Debug: log what options were parsed
     if (isset($options['debug'])) {
         echo "Parsed options: " . print_r($options, true) . "\n";
         echo "Command line args: " . print_r($argv, true) . "\n";
     }
-    
+
     if (empty($options) || isset($options['help'])) {
         throw new \InvalidArgumentException('No valid options provided. Use --file=filename.hstgr');
     }
-    
+
     $importer = new HostingerMigrationImporter($options);
     $importer->run();
-    
+
 } catch (\Throwable $e) {
     // Log error details for debugging
     $logFile = (getcwd() !== false ? getcwd() : '/tmp') . '/hostinger-migrator-import-log.txt';
@@ -805,7 +770,7 @@ try {
     $errorLog = "\n[{$timestamp}] FATAL ERROR: " . $e->getMessage() . "\n";
     $errorLog .= "[{$timestamp}] Stack trace: " . $e->getTraceAsString() . "\n";
     file_put_contents($logFile, $errorLog, FILE_APPEND);
-    
+
     // Display error message with usage instructions
     echo "ERROR: " . $e->getMessage() . "\n";
     echo "\nUsage: php " . basename(__FILE__) . " --file=filename.hstgr [options]\n";
@@ -819,7 +784,7 @@ try {
     echo "\nExamples:\n";
     echo "  php " . basename(__FILE__) . " --file=site_export.hstgr --verbose\n";
     echo "  php " . basename(__FILE__) . " --file=site_export.hstgr --sleep=0  # No delay (fastest, may hit I/O limits)\n";
-    
+
     // Re-throw the exception to be caught by the calling application
     throw $e;
 }
