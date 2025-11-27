@@ -215,7 +215,7 @@ class HostingerMigrationImporter {
             // Standard ASCII filename
                 preg_match('/^[a-zA-Z0-9._\-\s]+(\.[a-zA-Z0-9]+)?$/', $fileName) ||
                 // Allow more special characters common in filenames
-                preg_match('/^[a-zA-Z0-9._\-\s\(\)\[\]&@%+]+(\.[a-zA-Z0-9]+)?$/u', $fileName) ||
+                preg_match('/^[a-zA-Z0-9._\-\s()\[\]&@%+]+(\.[a-zA-Z0-9]+)?$/u', $fileName) ||
                 // Fallback: just check if it's not empty and reasonable length
                 (!empty($fileName) && strlen($fileName) <= 255 && !preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $fileName))
         );
@@ -527,7 +527,7 @@ class HostingerMigrationImporter {
 
         // Check if file is mostly binary
         $binaryCharCount = 0;
-        for ($i = 0; $i < strlen($firstBytes); $i++) {
+        for ($i = 0, $iMax = strlen($firstBytes); $i < $iMax; $i++) {
             $ord = ord($firstBytes[$i]);
             if ($ord < 32 && $ord !== 10 && $ord !== 13 && $ord !== 9) {
                 $binaryCharCount++;
@@ -584,7 +584,9 @@ class HostingerMigrationImporter {
 
                 $dir = dirname($fullPath);
                 if (!is_dir($dir)) {
-                    mkdir($dir, 0755, true);
+                    if (!mkdir($dir, 0755, true) && !is_dir($dir)) {
+                        throw new \RuntimeException(sprintf('Directory "%s" was not created', $dir));
+                    }
                 }
 
                 continue;
@@ -736,11 +738,14 @@ class HostingerMigrationImporter {
                 // Fallback: Pure PHP UTF-8 encoding (no deprecated functions)
                 if ($cp < 0x80) {
                     return chr($cp);
-                } elseif ($cp < 0x800) {
+                }
+                if ($cp < 0x800) {
                     return chr(0xC0 | ($cp >> 6)) . chr(0x80 | ($cp & 0x3F));
-                } elseif ($cp < 0x10000) {
+                }
+                if ($cp < 0x10000) {
                     return chr(0xE0 | ($cp >> 12)) . chr(0x80 | (($cp >> 6) & 0x3F)) . chr(0x80 | ($cp & 0x3F));
-                } elseif ($cp < 0x110000) {
+                }
+                if ($cp < 0x110000) {
                     return chr(0xF0 | ($cp >> 18)) . chr(0x80 | (($cp >> 12) & 0x3F)) . chr(0x80 | (($cp >> 6) & 0x3F)) . chr(0x80 | ($cp & 0x3F));
                 }
                 // Invalid code point: keep original
@@ -769,7 +774,7 @@ try {
     // Fallback: Manual parsing for space-separated arguments
     if (empty($options['file']) && count($argv) > 1) {
         $options = [];
-        for ($i = 1; $i < count($argv); $i++) {
+        for ($i = 1, $iMax = count($argv); $i < $iMax; $i++) {
             $arg = $argv[$i];
 
             if ($arg === '--file' && isset($argv[$i + 1])) {
