@@ -306,7 +306,7 @@ class HostingerMigrationImporter {
                 if ($isUnsafeAbsolute($filePath)) $reasons[] = "absolute path not allowed";
                 if ($hasTraversal) $reasons[] = "path traversal attempt (..)";
 
-                $this->log("Invalid header path/filename detected at file #{$fileCount}. Aborting extraction to avoid corrupt paths.\n- filename: '" . addslashes($fileName) . "'\n- path: '" . addslashes($filePath) . "'\n- reason: " . implode(", ", $reasons), false);
+                $this->log("Invalid header path/filename detected at file #{$fileCount}. Aborting extraction to avoid corrupt paths.\n- filename: '" . addslashes($fileName) . "'\n- path: '" . addslashes($filePath) . "'\n- reason: " . implode(", ", $reasons), true);
                 $stoppedDueToCorruption = true;
                 break;
             }
