@@ -290,6 +290,26 @@ class HostingerMigrationImporter {
             $fileName = str_replace("\0", '', $fileName);
             $filePath = str_replace("\0", '', $filePath);
 
+            $hasControlChars = (bool)preg_match('/[\x00-\x1F\x7F]/', $fileName . $filePath);
+
+            $pathPattern = '/^.{0,4112}$/s';
+            $filenamePattern = '/^[^\/]{1,255}$/s';
+            $isUnsafeAbsolute = function(string $p): bool { return $p !== '' && ($p[0] === '/' || $p[0] === '\\'); };
+            $hasTraversal = (strpos($filePath, '..') !== false);
+
+            if ($hasControlChars || !preg_match($pathPattern, $filePath) || !preg_match($filenamePattern, $fileName) || $isUnsafeAbsolute($filePath) || $hasTraversal) {
+                // Enhanced logging to show which validation failed
+                $reasons = [];
+                if ($hasControlChars) $reasons[] = "control characters in filename/path";
+                if (!preg_match($pathPattern, $filePath)) $reasons[] = "path too long (>4112 bytes)";
+                if (!preg_match($filenamePattern, $fileName)) $reasons[] = "invalid filename format";
+                if ($isUnsafeAbsolute($filePath)) $reasons[] = "absolute path not allowed";
+                if ($hasTraversal) $reasons[] = "path traversal attempt (..)";
+
+                $this->log("Invalid header path/filename detected at file #{$fileCount}. Aborting extraction to avoid corrupt paths.\n- filename: '" . addslashes($fileName) . "'\n- path: '" . addslashes($filePath) . "'\n- reason: " . implode(", ", $reasons), false);
+                $stoppedDueToCorruption = true;
+                break;
+            }
             // Basic validation
             if (empty($fileName) || $fileSize < 0 || $fileSize > 1024 * 1024 * 1024) {
                 $this->log("Invalid file data detected, stopping extraction");
@@ -557,7 +577,7 @@ class HostingerMigrationImporter {
                     fclose($currentFp);
                 }
 
-                $currentFile = trim(substr($trimmedLine, 9));
+                $currentFile = $this->decode_from_binary(trim(substr($trimmedLine, 9)));
 
                 // Path should already be in correct format from export
                 $fullPath = "{$this->workingDir}/{$currentFile}";
@@ -692,13 +712,36 @@ class HostingerMigrationImporter {
 
     /**
      * Decode a string from binary storage (handles international characters)
-     * This matches the plugin's decoding method
+     * This matches the plugin's decoding method and also decodes Info-ZIP style #Uhhhh escapes
      *
      * @param  string $value The URL-encoded string from binary storage
      * @return string Decoded original string
      */
     private function decode_from_binary($value) {
-        return urldecode(trim($value, "\0"));
+        // Trim NULs from fixed-width binary fields
+        $value = trim($value, "\0");
+        // If exporter used URL-encoding, decode it
+        if (strpos($value, '%') !== false) {
+            $value = urldecode($value);
+        }
+        // Decode Info-ZIP style escapes: #Uhhhh or #Uhhhhhh (hex code points)
+        if (strpos($value, '#U') !== false) {
+            $value = preg_replace_callback('/#U([0-9A-Fa-f]{4,6})/', function ($m) {
+                $cp = hexdec($m[1]);
+                // Convert code point to UTF-8 using iconv (portable)
+                $utf8 = @iconv('UCS-4BE', 'UTF-8', pack('N', $cp));
+                if ($utf8 !== false) {
+                    return $utf8;
+                }
+                // Fallback via HTML entities if mbstring is available
+                if (function_exists('mb_convert_encoding')) {
+                    return mb_convert_encoding('&#x' . strtoupper(dechex($cp)) . ';', 'UTF-8', 'HTML-ENTITIES');
+                }
+                // Last resort: leave the original escape
+                return $m[0];
+            }, $value);
+        }
+        return $value;
     }
 }
 
