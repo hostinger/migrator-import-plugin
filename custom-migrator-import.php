@@ -293,19 +293,28 @@ class HostingerMigrationImporter {
             $hasControlChars = (bool)preg_match('/[\x00-\x1F\x7F]/', $fileName . $filePath);
 
             $pathPattern = '/^.{0,4112}$/s';
-            $filenamePattern = '/^[^\/]{1,255}$/s';
-            $isUnsafeAbsolute = function(string $p): bool { return $p !== '' && ($p[0] === '/' || $p[0] === '\\'); };
+            $filenamePattern = '/^[^\/\\\\]{1,255}$/';
+            $isUnsafeAbsolute = static function(string $p): bool { return $p !== '' && ($p[0] === '/' || $p[0] === '\\'); };
             $hasTraversal = (bool)preg_match('#(^|/|\\\\)\.\.(/|\\\\|$)#', $filePath);
 
             if ($hasControlChars || !preg_match($pathPattern, $filePath) || !preg_match($filenamePattern, $fileName) || $isUnsafeAbsolute($filePath) || $hasTraversal) {
                 // Enhanced logging to show which validation failed
                 $reasons = [];
-                if ($hasControlChars) $reasons[] = "control characters in filename/path";
-                if (!preg_match($pathPattern, $filePath)) $reasons[] = "path too long (>4112 bytes)";
-                if (!preg_match($filenamePattern, $fileName)) $reasons[] = "invalid filename format";
-                if ($isUnsafeAbsolute($filePath)) $reasons[] = "absolute path not allowed";
-                if ($hasTraversal) $reasons[] = "path traversal attempt (..)";
-
+                if ($hasControlChars) {
+                    $reasons[] = "control characters in filename/path";
+                }
+                if (!preg_match($pathPattern, $filePath)) {
+                    $reasons[] = "path too long (>4112 bytes)";
+                }
+                if (!preg_match($filenamePattern, $fileName)) {
+                    $reasons[] = "invalid filename format";
+                }
+                if ($isUnsafeAbsolute($filePath)) {
+                    $reasons[] = "absolute path not allowed";
+                }
+                if ($hasTraversal) {
+                    $reasons[] = "path traversal attempt (..)";
+                }
                 $this->log("Invalid header path/filename detected at file #{$fileCount}. Aborting extraction to avoid corrupt paths.\n- filename: '" . addslashes($fileName) . "'\n- path: '" . addslashes($filePath) . "'\n- reason: " . implode(", ", $reasons), true);
                 $stoppedDueToCorruption = true;
                 break;
@@ -728,7 +737,7 @@ class HostingerMigrationImporter {
         }
         // Decode Info-ZIP style escapes: #Uhhhh or #Uhhhhhh (hex code points)
         if (strpos($value, '#U') !== false) {
-            $value = preg_replace_callback('/#U([0-9A-Fa-f]{4,6})/', function ($m) {
+            $value = preg_replace_callback('/#U([0-9A-Fa-f]{4,6})/', static function ($m) {
                 $cp = hexdec($m[1]);
                 // Convert code point to UTF-8 using iconv (portable, PHP 8.2+ safe)
                 $utf8 = @iconv('UCS-4BE', 'UTF-8', pack('N', $cp));
