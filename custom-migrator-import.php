@@ -295,7 +295,7 @@ class HostingerMigrationImporter {
             $pathPattern = '/^.{0,4112}$/s';
             $filenamePattern = '/^[^\/]{1,255}$/s';
             $isUnsafeAbsolute = function(string $p): bool { return $p !== '' && ($p[0] === '/' || $p[0] === '\\'); };
-            $hasTraversal = (strpos($filePath, '..') !== false);
+            $hasTraversal = (bool)preg_match('#(^|/|\\\\)\.\.(/|\\\\|$)#', $filePath);
 
             if ($hasControlChars || !preg_match($pathPattern, $filePath) || !preg_match($filenamePattern, $fileName) || $isUnsafeAbsolute($filePath) || $hasTraversal) {
                 // Enhanced logging to show which validation failed
