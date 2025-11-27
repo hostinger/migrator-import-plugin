@@ -728,16 +728,22 @@ class HostingerMigrationImporter {
         if (strpos($value, '#U') !== false) {
             $value = preg_replace_callback('/#U([0-9A-Fa-f]{4,6})/', function ($m) {
                 $cp = hexdec($m[1]);
-                // Convert code point to UTF-8 using iconv (portable)
+                // Convert code point to UTF-8 using iconv (portable, PHP 8.2+ safe)
                 $utf8 = @iconv('UCS-4BE', 'UTF-8', pack('N', $cp));
                 if ($utf8 !== false) {
                     return $utf8;
                 }
-                // Fallback via HTML entities if mbstring is available
-                if (function_exists('mb_convert_encoding')) {
-                    return mb_convert_encoding('&#x' . strtoupper(dechex($cp)) . ';', 'UTF-8', 'HTML-ENTITIES');
+                // Fallback: Pure PHP UTF-8 encoding (no deprecated functions)
+                if ($cp < 0x80) {
+                    return chr($cp);
+                } elseif ($cp < 0x800) {
+                    return chr(0xC0 | ($cp >> 6)) . chr(0x80 | ($cp & 0x3F));
+                } elseif ($cp < 0x10000) {
+                    return chr(0xE0 | ($cp >> 12)) . chr(0x80 | (($cp >> 6) & 0x3F)) . chr(0x80 | ($cp & 0x3F));
+                } elseif ($cp < 0x110000) {
+                    return chr(0xF0 | ($cp >> 18)) . chr(0x80 | (($cp >> 12) & 0x3F)) . chr(0x80 | (($cp >> 6) & 0x3F)) . chr(0x80 | ($cp & 0x3F));
                 }
-                // Last resort: leave the original escape
+                // Invalid code point: keep original
                 return $m[0];
             }, $value);
         }
