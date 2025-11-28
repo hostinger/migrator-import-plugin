@@ -215,7 +215,7 @@ class HostingerMigrationImporter {
             // Standard ASCII filename
                 preg_match('/^[a-zA-Z0-9._\-\s]+(\.[a-zA-Z0-9]+)?$/', $fileName) ||
                 // Allow more special characters common in filenames
-                preg_match('/^[a-zA-Z0-9._\-\s\(\)\[\]&@%+]+(\.[a-zA-Z0-9]+)?$/u', $fileName) ||
+                preg_match('/^[a-zA-Z0-9._\-\s()\[\]&@%+]+(\.[a-zA-Z0-9]+)?$/u', $fileName) ||
                 // Fallback: just check if it's not empty and reasonable length
                 (!empty($fileName) && strlen($fileName) <= 255 && !preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $fileName))
         );
@@ -290,6 +290,35 @@ class HostingerMigrationImporter {
             $fileName = str_replace("\0", '', $fileName);
             $filePath = str_replace("\0", '', $filePath);
 
+            $hasControlChars = (bool)preg_match('/[\x00-\x1F\x7F]/', $fileName . $filePath);
+
+            $pathPattern = '/^.{0,4112}$/s';
+            $filenamePattern = '/^[^\/\\\\]{1,255}$/';
+            $isUnsafeAbsolute = static function(string $p): bool { return $p !== '' && ($p[0] === '/' || $p[0] === '\\'); };
+            $hasTraversal = (bool)preg_match('#(^|/|\\\\)\.\.(/|\\\\|$)#', $filePath);
+
+            if ($hasControlChars || !preg_match($pathPattern, $filePath) || !preg_match($filenamePattern, $fileName) || $isUnsafeAbsolute($filePath) || $hasTraversal) {
+                // Enhanced logging to show which validation failed
+                $reasons = [];
+                if ($hasControlChars) {
+                    $reasons[] = "control characters in filename/path";
+                }
+                if (!preg_match($pathPattern, $filePath)) {
+                    $reasons[] = "path too long (>4112 bytes)";
+                }
+                if (!preg_match($filenamePattern, $fileName)) {
+                    $reasons[] = "invalid filename format";
+                }
+                if ($isUnsafeAbsolute($filePath)) {
+                    $reasons[] = "absolute path not allowed";
+                }
+                if ($hasTraversal) {
+                    $reasons[] = "path traversal attempt (..)";
+                }
+                $this->log("Invalid header path/filename detected at file #{$fileCount}. Aborting extraction to avoid corrupt paths.\n- filename: '" . addslashes($fileName) . "'\n- path: '" . addslashes($filePath) . "'\n- reason: " . implode(", ", $reasons), true);
+                $stoppedDueToCorruption = true;
+                break;
+            }
             // Basic validation
             if (empty($fileName) || $fileSize < 0 || $fileSize > 1024 * 1024 * 1024) {
                 $this->log("Invalid file data detected, stopping extraction");
@@ -507,7 +536,7 @@ class HostingerMigrationImporter {
 
         // Check if file is mostly binary
         $binaryCharCount = 0;
-        for ($i = 0; $i < strlen($firstBytes); $i++) {
+        for ($i = 0, $iMax = strlen($firstBytes); $i < $iMax; $i++) {
             $ord = ord($firstBytes[$i]);
             if ($ord < 32 && $ord !== 10 && $ord !== 13 && $ord !== 9) {
                 $binaryCharCount++;
@@ -557,14 +586,16 @@ class HostingerMigrationImporter {
                     fclose($currentFp);
                 }
 
-                $currentFile = trim(substr($trimmedLine, 9));
+                $currentFile = $this->decode_from_binary(trim(substr($trimmedLine, 9)));
 
                 // Path should already be in correct format from export
                 $fullPath = "{$this->workingDir}/{$currentFile}";
 
                 $dir = dirname($fullPath);
                 if (!is_dir($dir)) {
-                    mkdir($dir, 0755, true);
+                    if (!mkdir($dir, 0755, true) && !is_dir($dir)) {
+                        throw new \RuntimeException(sprintf('Directory "%s" was not created', $dir));
+                    }
                 }
 
                 continue;
@@ -692,13 +723,45 @@ class HostingerMigrationImporter {
 
     /**
      * Decode a string from binary storage (handles international characters)
-     * This matches the plugin's decoding method
+     * This matches the plugin's decoding method and also decodes Info-ZIP style #Uhhhh escapes
      *
      * @param  string $value The URL-encoded string from binary storage
      * @return string Decoded original string
      */
     private function decode_from_binary($value) {
-        return urldecode(trim($value, "\0"));
+        // Trim NULs from fixed-width binary fields
+        $value = trim($value, "\0");
+        // If exporter used URL-encoding, decode it
+        if (strpos($value, '%') !== false) {
+            $value = urldecode($value);
+        }
+        // Decode Info-ZIP style escapes: #Uhhhh or #Uhhhhhh (hex code points)
+        if (strpos($value, '#U') !== false) {
+            $value = preg_replace_callback('/#U([0-9A-Fa-f]{4,6})/', static function ($m) {
+                $cp = hexdec($m[1]);
+                // Convert code point to UTF-8 using iconv (portable, PHP 8.2+ safe)
+                $utf8 = @iconv('UCS-4BE', 'UTF-8', pack('N', $cp));
+                if ($utf8 !== false) {
+                    return $utf8;
+                }
+                // Fallback: Pure PHP UTF-8 encoding (no deprecated functions)
+                if ($cp < 0x80) {
+                    return chr($cp);
+                }
+                if ($cp < 0x800) {
+                    return chr(0xC0 | ($cp >> 6)) . chr(0x80 | ($cp & 0x3F));
+                }
+                if ($cp < 0x10000) {
+                    return chr(0xE0 | ($cp >> 12)) . chr(0x80 | (($cp >> 6) & 0x3F)) . chr(0x80 | ($cp & 0x3F));
+                }
+                if ($cp < 0x110000) {
+                    return chr(0xF0 | ($cp >> 18)) . chr(0x80 | (($cp >> 12) & 0x3F)) . chr(0x80 | (($cp >> 6) & 0x3F)) . chr(0x80 | ($cp & 0x3F));
+                }
+                // Invalid code point: keep original
+                return $m[0];
+            }, $value);
+        }
+        return $value;
     }
 }
 
@@ -720,7 +783,7 @@ try {
     // Fallback: Manual parsing for space-separated arguments
     if (empty($options['file']) && count($argv) > 1) {
         $options = [];
-        for ($i = 1; $i < count($argv); $i++) {
+        for ($i = 1, $iMax = count($argv); $i < $iMax; $i++) {
             $arg = $argv[$i];
 
             if ($arg === '--file' && isset($argv[$i + 1])) {
